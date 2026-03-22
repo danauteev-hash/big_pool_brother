@@ -43,6 +43,15 @@ class Detection:
     score: float
 
 
+@dataclass
+class CandidateAnnotation:
+    bbox_xyxy: list[float]
+    segments: list[list[float]]
+    area: float
+    score: float
+    mask: np.ndarray
+
+
 def ensure_clean_dir(path: Path) -> None:
     if path.exists():
         shutil.rmtree(path)
@@ -58,6 +67,14 @@ def polygon_mask(shape: tuple[int, int], polygon: list[list[int]]) -> np.ndarray
 
 def point_in_polygon(point: tuple[float, float], polygon: np.ndarray) -> bool:
     return cv2.pointPolygonTest(polygon, point, False) >= 0
+
+
+def point_in_mask(point: tuple[float, float], mask: np.ndarray) -> bool:
+    x = int(round(point[0]))
+    y = int(round(point[1]))
+    if x < 0 or y < 0 or y >= mask.shape[0] or x >= mask.shape[1]:
+        return False
+    return bool(mask[y, x] > 0)
 
 
 def contour_to_coco(mask: np.ndarray) -> list[list[float]]:
@@ -109,6 +126,64 @@ def iou_xyxy(box_a: Iterable[float], box_b: Iterable[float]) -> float:
     return intersection / union
 
 
+def clip_box(box: Iterable[float], width: int, height: int) -> list[int]:
+    x1, y1, x2, y2 = box
+    x1 = int(np.clip(round(x1), 0, max(0, width - 1)))
+    y1 = int(np.clip(round(y1), 0, max(0, height - 1)))
+    x2 = int(np.clip(round(x2), x1 + 1, width))
+    y2 = int(np.clip(round(y2), y1 + 1, height))
+    return [x1, y1, x2, y2]
+
+
+def box_mask(box: Iterable[float], shape: tuple[int, int]) -> np.ndarray:
+    height, width = shape
+    x1, y1, x2, y2 = clip_box(box, width, height)
+    mask = np.zeros(shape, dtype=np.uint8)
+    mask[y1:y2, x1:x2] = 1
+    return mask
+
+
+def overlap_ratio(mask: np.ndarray, region_mask: np.ndarray) -> float:
+    mask_pixels = float(mask.sum())
+    if mask_pixels <= 0:
+        return 0.0
+    return float(np.logical_and(mask > 0, region_mask > 0).sum()) / mask_pixels
+
+
+def touches_image_edge(box: Iterable[float], width: int, height: int, margin: int) -> bool:
+    x1, y1, x2, y2 = box
+    return x1 <= margin or y1 <= margin or x2 >= width - margin or y2 >= height - margin
+
+
+def touches_right_edge(box: Iterable[float], width: int, margin: int) -> bool:
+    _x1, _y1, x2, _y2 = box
+    return x2 >= width - margin
+
+
+def bbox_width_height(box: Iterable[float]) -> tuple[float, float]:
+    x1, y1, x2, y2 = box
+    return max(1.0, x2 - x1), max(1.0, y2 - y1)
+
+
+def build_core_pool_mask(pool_mask: np.ndarray) -> np.ndarray:
+    margin = int(CONFIG["core_pool_margin_px"])
+    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (margin * 2 + 1, margin * 2 + 1))
+    return cv2.erode(pool_mask, kernel)
+
+
+def build_water_mask(image_rgb: np.ndarray, pool_mask: np.ndarray) -> np.ndarray:
+    hsv = cv2.cvtColor(image_rgb, cv2.COLOR_RGB2HSV)
+    lower = np.array(CONFIG["water_hsv"]["lower"], dtype=np.uint8)
+    upper = np.array(CONFIG["water_hsv"]["upper"], dtype=np.uint8)
+    water_mask = cv2.inRange(hsv, lower, upper)
+    water_mask = cv2.bitwise_and(water_mask, pool_mask)
+
+    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (7, 7))
+    water_mask = cv2.morphologyEx(water_mask, cv2.MORPH_CLOSE, kernel, iterations=2)
+    water_mask = cv2.morphologyEx(water_mask, cv2.MORPH_OPEN, kernel, iterations=1)
+    return (water_mask > 0).astype(np.uint8)
+
+
 def load_models() -> tuple[AutoImageProcessor, AutoModelForObjectDetection, FastSAM]:
     processor = AutoImageProcessor.from_pretrained(RTDETR_DIR, use_fast=False)
     model = AutoModelForObjectDetection.from_pretrained(RTDETR_DIR)
@@ -151,7 +226,7 @@ def refine_with_fastsam(
     image_rgb: np.ndarray,
     detections: list[Detection],
     fastsam_model: FastSAM,
-) -> list[tuple[list[float], list[list[float]], float, float]]:
+) -> list[CandidateAnnotation]:
     if not detections:
         return []
 
@@ -165,10 +240,10 @@ def refine_with_fastsam(
         verbose=False,
     )
     prompt = FastSAMPrompt(image_rgb, everything, device="cpu")
-    refined: list[tuple[list[float], list[list[float]], float, float]] = []
+    refined: list[CandidateAnnotation] = []
 
     for detection in detections:
-        box = [int(round(v)) for v in detection.bbox_xyxy]
+        box = clip_box(detection.bbox_xyxy, image_rgb.shape[1], image_rgb.shape[0])
         masks = prompt.box_prompt(bboxes=[box])
         if len(masks) > 0:
             mask = masks[0].astype(np.uint8)
@@ -176,30 +251,86 @@ def refine_with_fastsam(
                 refined_box = bbox_from_mask(mask)
                 segments = contour_to_coco(mask)
                 if refined_box and segments:
-                    refined.append((refined_box, segments, float(mask.sum()), detection.score))
+                    refined.append(
+                        CandidateAnnotation(
+                            bbox_xyxy=refined_box,
+                            segments=segments,
+                            area=float(mask.sum()),
+                            score=detection.score,
+                            mask=mask,
+                        )
+                    )
                     continue
 
-        fallback_mask = np.zeros(image_rgb.shape[:2], dtype=np.uint8)
-        x1, y1, x2, y2 = box
-        fallback_mask[y1:y2, x1:x2] = 1
+        fallback_mask = box_mask(box, image_rgb.shape[:2])
         refined.append(
-            (
-                detection.bbox_xyxy,
-                contour_to_coco(fallback_mask),
-                bbox_area_xyxy(detection.bbox_xyxy),
-                detection.score,
+            CandidateAnnotation(
+                bbox_xyxy=detection.bbox_xyxy,
+                segments=contour_to_coco(fallback_mask),
+                area=bbox_area_xyxy(detection.bbox_xyxy),
+                score=detection.score,
+                mask=fallback_mask,
             )
         )
     return refined
 
 
-def deduplicate_annotations(
-    refined: list[tuple[list[float], list[list[float]], float, float]]
-) -> list[tuple[list[float], list[list[float]], float, float]]:
-    kept: list[tuple[list[float], list[list[float]], float, float]] = []
-    for candidate in sorted(refined, key=lambda item: item[3], reverse=True):
-        candidate_box = candidate[0]
-        if any(iou_xyxy(candidate_box, existing[0]) >= CONFIG["dedupe_iou_threshold"] for existing in kept):
+def filter_candidates(
+    refined: list[CandidateAnnotation],
+    image_shape: tuple[int, int, int],
+    pool_mask: np.ndarray,
+    core_pool_mask: np.ndarray,
+    water_mask: np.ndarray,
+) -> list[CandidateAnnotation]:
+    height, width = image_shape[:2]
+    kept: list[CandidateAnnotation] = []
+
+    for candidate in sorted(refined, key=lambda item: item.score, reverse=True):
+        candidate_mask = candidate.mask if candidate.mask.sum() > 0 else box_mask(candidate.bbox_xyxy, image_shape[:2])
+        candidate_box = candidate.bbox_xyxy
+        center = ((candidate_box[0] + candidate_box[2]) / 2.0, (candidate_box[1] + candidate_box[3]) / 2.0)
+        area = max(candidate.area, 1.0)
+        box_width, box_height = bbox_width_height(candidate_box)
+        aspect_ratio = box_height / box_width
+        pool_overlap = overlap_ratio(candidate_mask, pool_mask)
+        core_overlap = overlap_ratio(candidate_mask, core_pool_mask)
+        water_overlap = overlap_ratio(candidate_mask, water_mask)
+        on_pool_edge = not point_in_mask(center, core_pool_mask)
+        on_right_image_edge = touches_right_edge(candidate_box, width, int(CONFIG["right_edge_margin_px"]))
+
+        if candidate_box[1] <= CONFIG["top_edge_margin_px"] and box_height <= CONFIG["top_edge_max_height_px"] and on_pool_edge:
+            continue
+
+        if pool_overlap < CONFIG["min_pool_overlap"]:
+            continue
+        if water_overlap < CONFIG["min_water_overlap"]:
+            continue
+
+        if on_pool_edge:
+            if area < CONFIG["edge_min_area"]:
+                continue
+            if core_overlap < CONFIG["edge_min_core_overlap"]:
+                continue
+            if water_overlap < CONFIG["edge_min_water_overlap"]:
+                continue
+
+        if on_right_image_edge:
+            if aspect_ratio > CONFIG["right_edge_max_aspect_ratio"]:
+                if candidate.score < CONFIG["right_edge_min_score"]:
+                    continue
+                if area < CONFIG["right_edge_min_area"]:
+                    continue
+                if core_overlap < CONFIG["right_edge_min_core_overlap"]:
+                    continue
+                if water_overlap < CONFIG["right_edge_vertical_min_water_overlap"]:
+                    continue
+            else:
+                if candidate.score < CONFIG["right_edge_min_score"]:
+                    continue
+                if water_overlap < CONFIG["right_edge_min_water_overlap"]:
+                    continue
+
+        if any(iou_xyxy(candidate_box, existing.bbox_xyxy) >= CONFIG["dedupe_iou_threshold"] for existing in kept):
             continue
         kept.append(candidate)
     return kept
@@ -237,6 +368,8 @@ def build_dataset() -> None:
 
     processor, detector, fastsam_model = load_models()
     polygon = np.array(CONFIG["pool_polygon"], dtype=np.int32)
+    pool_mask_cache: dict[tuple[int, int], np.ndarray] = {}
+    core_pool_mask_cache: dict[tuple[int, int], np.ndarray] = {}
 
     splits = {
         "train": {"images": [], "annotations": [], "count": 0},
@@ -257,8 +390,22 @@ def build_dataset() -> None:
             filename = f"{video_path.stem}_{sample_idx:04d}.jpg"
             save_rgb(frame_rgb, IMAGES_DIR / split / filename)
 
+            shape_key = frame_rgb.shape[:2]
+            if shape_key not in pool_mask_cache:
+                pool_mask_cache[shape_key] = polygon_mask(shape_key, CONFIG["pool_polygon"])
+                core_pool_mask_cache[shape_key] = build_core_pool_mask(pool_mask_cache[shape_key])
+            pool_mask = pool_mask_cache[shape_key]
+            core_pool_mask = core_pool_mask_cache[shape_key]
+            water_mask = build_water_mask(frame_rgb, pool_mask)
+
             detections = detect_people(image, processor, detector, polygon)
-            refined = deduplicate_annotations(refine_with_fastsam(frame_rgb, detections, fastsam_model))
+            refined = filter_candidates(
+                refine_with_fastsam(frame_rgb, detections, fastsam_model),
+                frame_rgb.shape,
+                pool_mask,
+                core_pool_mask,
+                water_mask,
+            )
 
             splits[split]["images"].append(
                 {
@@ -271,18 +418,18 @@ def build_dataset() -> None:
                 }
             )
 
-            for bbox_xyxy, segments, area, _score in refined:
-                if not segments:
+            for candidate in refined:
+                if not candidate.segments:
                     continue
                 splits[split]["annotations"].append(
                     {
                         "id": annotation_id,
                         "image_id": image_id,
                         "category_id": CATEGORY["id"],
-                        "bbox": bbox_xyxy_to_coco(bbox_xyxy),
-                        "area": round(float(area), 2),
+                        "bbox": bbox_xyxy_to_coco(candidate.bbox_xyxy),
+                        "area": round(float(candidate.area), 2),
                         "iscrowd": 0,
-                        "segmentation": segments,
+                        "segmentation": candidate.segments,
                     }
                 )
                 annotation_id += 1

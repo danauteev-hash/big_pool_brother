@@ -4,6 +4,7 @@ artifacts/
 data/
 third_party/
 tools/
+__pycache__/
 
 dataset/videos_cropped/*_pool.mp4
 !dataset/videos_cropped/*_undistorted_pool.mp4

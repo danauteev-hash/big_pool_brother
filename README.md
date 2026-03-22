@@ -36,3 +36,4 @@ python .\scripts\build_autolabeled_dataset.py
 - Fish-eye correction uses the same `cv2.fisheye` flow as the referenced gist, with scene-tuned parameters for this camera.
 - Validation split is video-based: `video_004` is reserved for validation.
 - The dataset class is `swimmer`, derived from RT-DETR `person` detections limited to the pool polygon and refined by FastSAM.
+- The auto-label pass includes additional edge-case filtering based on a core pool mask, water-color overlap, and stricter handling of right-border detections.
