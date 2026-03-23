@@ -17,6 +17,8 @@ This repository contains a local pipeline for:
 - Undistorted videos: `dataset/videos_undistorted/*.mp4`
 - Images: `dataset/images/train/*.jpg`, `dataset/images/val/*.jpg`
 - COCO annotations: `dataset/annotations/instances_train.json`, `dataset/annotations/instances_val.json`
+- YOLOv8 labels: `dataset/yolov8/labels/train/*.txt`, `dataset/yolov8/labels/val/*.txt`
+- YOLOv8 config: `dataset/yolov8/data.yaml`
 - Dataset summary: `dataset/metadata.json`
 
 ## Run
@@ -26,6 +28,8 @@ pip install -r requirements.txt
 python .\scripts\undistort_fisheye_videos.py
 python .\scripts\crop_pool_videos.py
 python .\scripts\build_autolabeled_dataset.py
+python .\scripts\extend_dataset_from_video.py --video <path-to-video> --video-id <video-id> --target-images 260
+python .\scripts\export_yolov8_labels.py
 ```
 
 ## Notes
