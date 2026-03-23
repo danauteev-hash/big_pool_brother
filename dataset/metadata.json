@@ -17,5 +17,12 @@
       "fps": 59.9401,
       "duration_seconds": 97.1
     }
-  ]
+  ],
+  "yolov8_augmented": {
+    "original_train_images": 332,
+    "synthetic_train_images": 319,
+    "total_train_images": 651,
+    "val_images": 18,
+    "dataset_dir": "C:\\Users\\A006\\Desktop\\\u043f\u0440\u043e\u0435\u043a\u0442\\dataset\\yolov8_augmented"
+  }
 }
