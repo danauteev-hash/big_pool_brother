@@ -27,7 +27,8 @@
     [0, 250]
   ],
   "segmentation_backend": "sam3",
-  "allow_fastsam_fallback": true,
+  "allow_box_fallback": true,
+  "allow_fastsam_fallback": false,
   "sam3_checkpoint": "models/sam3_b.pt",
   "sam3_imgsz": 1024,
   "sam3_conf": 0.25,

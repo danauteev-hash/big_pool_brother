@@ -1,0 +1,9 @@
+<View>
+  <Image name="image" value="$image"/>
+  <RectangleLabels name="bbox" toName="image">
+    <Label value="swimmer" background="#F4B400"/>
+  </RectangleLabels>
+  <KeyPointLabels name="kp" toName="image" strokeColor="#30DFA4">
+    <Label value="swimmer" background="#30DFA4"/>
+  </KeyPointLabels>
+</View>

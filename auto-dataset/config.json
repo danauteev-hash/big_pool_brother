@@ -1,0 +1,9 @@
+{
+  "source_video": "C:\\Users\\A006\\Downloads\\Статика (высота- 5 метров), панорама горизонтального бассейна (180°). 4K 60fps, 1_37. VID_20260304_115044_00_020.mp4",
+  "video_id": "full_pool_video_20260304",
+  "sample_fps": 4.0,
+  "pose_dataset_dir": "dataset/yolov26_pose",
+  "segmentation_backend": "sam3",
+  "sam3_checkpoint": "models/sam3_b.pt",
+  "allow_box_fallback": true
+}

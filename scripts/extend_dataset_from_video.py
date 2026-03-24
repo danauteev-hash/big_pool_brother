@@ -37,7 +37,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--video", type=Path, required=True, help="Path to the source video.")
     parser.add_argument("--video-id", default="full_pool_video", help="Stable video id used in the dataset.")
     parser.add_argument("--split", default="train", choices=["train"], help="Dataset split to extend.")
-    parser.add_argument("--target-images", type=int, default=260, help="Target number of sampled annotated images.")
+    parser.add_argument("--sample-fps", type=float, default=4.0, help="Target frame sampling rate.")
     return parser.parse_args()
 
 
@@ -76,9 +76,10 @@ def preprocess_frame(frame_bgr: np.ndarray, map1: np.ndarray, map2: np.ndarray) 
     return cv2.cvtColor(resized, cv2.COLOR_BGR2RGB)
 
 
-def target_frame_indices(total_frames: int, target_images: int) -> set[int]:
-    target_images = min(max(1, target_images), total_frames)
-    return {int(index) for index in np.linspace(0, total_frames - 1, num=target_images)}
+def sampled_frame_indices(total_frames: int, video_fps: float, sample_fps: float) -> set[int]:
+    sample_fps = max(0.1, sample_fps)
+    frame_interval = max(1, int(round(video_fps / sample_fps)))
+    return set(range(0, total_frames, frame_interval))
 
 
 def remove_existing_video_entries(coco: dict, split_dir: Path, video_id: str) -> dict:
@@ -116,7 +117,7 @@ def main() -> None:
     image_id = next_id(train_coco["images"])
     annotation_id = next_id(train_coco["annotations"])
 
-    processor, detector, fastsam_model = BUILDER.load_models()
+    processor, detector, segmenter, segmenter_name = BUILDER.load_models()
     polygon = np.array(CONFIG["pool_polygon"], dtype=np.int32)
     pool_mask = BUILDER.polygon_mask((CONFIG["crop"]["height"], CONFIG["crop"]["width"]), CONFIG["pool_polygon"])
     core_pool_mask = BUILDER.build_core_pool_mask(pool_mask)
@@ -133,7 +134,7 @@ def main() -> None:
             int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT)),
         )
     )
-    target_indices = target_frame_indices(total_frames, args.target_images)
+    target_indices = sampled_frame_indices(total_frames, fps, args.sample_fps)
 
     frame_index = 0
     saved_images = 0
@@ -151,7 +152,7 @@ def main() -> None:
             image = Image.fromarray(frame_rgb)
             detections = BUILDER.detect_people(image, processor, detector, polygon)
             refined = BUILDER.filter_candidates(
-                BUILDER.refine_with_fastsam(frame_rgb, detections, fastsam_model),
+                BUILDER.refine_with_segmenter(frame_rgb, detections, segmenter, segmenter_name),
                 frame_rgb.shape,
                 pool_mask,
                 core_pool_mask,
@@ -210,11 +211,12 @@ def main() -> None:
         {
             "video_id": args.video_id,
             "source_file": video_path.name,
-            "target_images": args.target_images,
+            "sample_fps": args.sample_fps,
             "saved_images": saved_images,
             "saved_annotations": saved_annotations,
             "fps": round(float(fps), 4),
             "duration_seconds": round(total_frames / fps, 2) if fps else None,
+            "segmentation_backend": segmenter_name,
         }
     )
     (DATASET_DIR / "metadata.json").write_text(json.dumps(metadata, indent=2), encoding="utf-8")

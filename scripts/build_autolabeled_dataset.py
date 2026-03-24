@@ -190,6 +190,9 @@ def load_segmenter() -> tuple[Any, str]:
     if backend == "fastsam":
         import sys
 
+        for module_name in list(sys.modules):
+            if module_name == "ultralytics" or module_name.startswith("ultralytics."):
+                sys.modules.pop(module_name, None)
         sys.path.insert(0, str(ROOT / "vendor" / "FastSAM"))
         from fastsam import FastSAM
 
@@ -199,7 +202,10 @@ def load_segmenter() -> tuple[Any, str]:
         try:
             from ultralytics import SAM
         except ImportError as exc:
-            if not CONFIG.get("allow_fastsam_fallback", True):
+            if CONFIG.get("allow_box_fallback", True):
+                print("[segmenter] SAM3 dependencies are unavailable, falling back to box-based refinement.")
+                return None, "BoxRefine"
+            if not CONFIG.get("allow_fastsam_fallback", False):
                 raise RuntimeError(
                     "SAM3 backend requires 'ultralytics' and 'timm'. Install requirements.txt first."
                 ) from exc
@@ -209,7 +215,10 @@ def load_segmenter() -> tuple[Any, str]:
 
         checkpoint = resolve_path(CONFIG.get("sam3_checkpoint", "models/sam3_b.pt"))
         if not checkpoint.exists():
-            if not CONFIG.get("allow_fastsam_fallback", True):
+            if CONFIG.get("allow_box_fallback", True):
+                print(f"[segmenter] SAM3 checkpoint not found at {checkpoint}, falling back to box-based refinement.")
+                return None, "BoxRefine"
+            if not CONFIG.get("allow_fastsam_fallback", False):
                 raise FileNotFoundError(
                     f"SAM3 checkpoint not found: {checkpoint}. "
                     "Official facebookresearch/sam3 weights require Hugging Face access and authentication."
@@ -219,6 +228,9 @@ def load_segmenter() -> tuple[Any, str]:
             return load_segmenter()
 
         return SAM(str(checkpoint)), "SAM3"
+
+    if backend == "box":
+        return None, "BoxRefine"
 
     raise ValueError(f"Unsupported segmentation backend: {backend}")
 
@@ -371,6 +383,26 @@ def refine_with_sam3(
     return refined
 
 
+def refine_with_box_masks(
+    image_rgb: np.ndarray,
+    detections: list[Detection],
+) -> list[CandidateAnnotation]:
+    refined: list[CandidateAnnotation] = []
+    for detection in detections:
+        box = clip_box(detection.bbox_xyxy, image_rgb.shape[1], image_rgb.shape[0])
+        mask = box_mask(box, image_rgb.shape[:2])
+        refined.append(
+            CandidateAnnotation(
+                bbox_xyxy=detection.bbox_xyxy,
+                segments=contour_to_coco(mask),
+                area=bbox_area_xyxy(detection.bbox_xyxy),
+                score=detection.score,
+                mask=mask,
+            )
+        )
+    return refined
+
+
 def refine_with_segmenter(
     image_rgb: np.ndarray,
     detections: list[Detection],
@@ -381,6 +413,8 @@ def refine_with_segmenter(
         return refine_with_fastsam(image_rgb, detections, segmenter)
     if segmenter_name == "SAM3":
         return refine_with_sam3(image_rgb, detections, segmenter)
+    if segmenter_name == "BoxRefine":
+        return refine_with_box_masks(image_rgb, detections)
     raise ValueError(f"Unsupported segmenter name: {segmenter_name}")
 
 

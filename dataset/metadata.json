@@ -1,7 +1,7 @@
 {
-  "train_images": 332,
+  "train_images": 465,
   "val_images": 18,
-  "train_annotations": 1068,
+  "train_annotations": 2661,
   "val_annotations": 37,
   "sample_fps": 1.0,
   "val_videos": [
@@ -10,12 +10,13 @@
   "extended_videos": [
     {
       "video_id": "full_pool_video_20260304",
-      "source_file": "full_pool_video.mp4",
-      "target_images": 260,
-      "saved_images": 248,
-      "saved_annotations": 914,
+      "source_file": "\u0421\u0442\u0430\u0442\u0438\u043a\u0430 (\u0432\u044b\u0441\u043e\u0442\u0430- 5 \u043c\u0435\u0442\u0440\u043e\u0432), \u043f\u0430\u043d\u043e\u0440\u0430\u043c\u0430 \u0433\u043e\u0440\u0438\u0437\u043e\u043d\u0442\u0430\u043b\u044c\u043d\u043e\u0433\u043e \u0431\u0430\u0441\u0441\u0435\u0439\u043d\u0430 (180\u00b0). 4K 60fps, 1_37. VID_20260304_115044_00_020.mp4",
+      "sample_fps": 4.0,
+      "saved_images": 381,
+      "saved_annotations": 2507,
       "fps": 59.9401,
-      "duration_seconds": 97.1
+      "duration_seconds": 97.1,
+      "segmentation_backend": "BoxRefine"
     }
   ],
   "yolov8_augmented": {
@@ -25,17 +26,21 @@
     "val_images": 18,
     "dataset_dir": "C:\\Users\\A006\\Desktop\\\u043f\u0440\u043e\u0435\u043a\u0442\\dataset\\yolov8_augmented"
   },
-  "yolo26_pose": {
+  "yolov26_pose": {
     "model_checkpoint": "C:\\Users\\A006\\.codex\\worktrees\\95b5\\\u043f\u0440\u043e\u0435\u043a\u0442\\models\\yolo26n-pose.pt",
-    "dataset_dir": "C:\\Users\\A006\\.codex\\worktrees\\95b5\\\u043f\u0440\u043e\u0435\u043a\u0442\\dataset\\yolo26_pose",
-    "visualization_dir": "C:\\Users\\A006\\.codex\\worktrees\\95b5\\\u043f\u0440\u043e\u0435\u043a\u0442\\dataset\\yolo26_pose\\visualizations",
-    "train_images": 332,
-    "train_images_with_pose": 279,
-    "train_pose_annotations": 666,
-    "train_label_files": 332,
+    "dataset_dir": "C:\\Users\\A006\\.codex\\worktrees\\95b5\\\u043f\u0440\u043e\u0435\u043a\u0442\\dataset\\yolov26_pose",
+    "visualization_dir": "C:\\Users\\A006\\.codex\\worktrees\\95b5\\\u043f\u0440\u043e\u0435\u043a\u0442\\dataset\\yolov26_pose\\visualizations",
+    "label_studio_dir": "C:\\Users\\A006\\.codex\\worktrees\\95b5\\\u043f\u0440\u043e\u0435\u043a\u0442\\dataset\\yolov26_pose\\label_studio",
+    "original_train_images": 465,
+    "augmented_train_images": 419,
+    "total_train_images": 884,
+    "train_images_with_pose": 419,
+    "train_pose_annotations": 1611,
+    "train_label_files": 884,
     "val_images": 18,
     "val_images_with_pose": 15,
     "val_pose_annotations": 24,
-    "val_label_files": 18
+    "val_label_files": 18,
+    "augmentation_policy": "offline_hsv_brightness_blur_noise_sharpen_optional_horizontal_flip"
   }
 }
