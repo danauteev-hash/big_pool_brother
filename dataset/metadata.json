@@ -24,5 +24,18 @@
     "total_train_images": 651,
     "val_images": 18,
     "dataset_dir": "C:\\Users\\A006\\Desktop\\\u043f\u0440\u043e\u0435\u043a\u0442\\dataset\\yolov8_augmented"
+  },
+  "yolo26_pose": {
+    "model_checkpoint": "C:\\Users\\A006\\.codex\\worktrees\\95b5\\\u043f\u0440\u043e\u0435\u043a\u0442\\models\\yolo26n-pose.pt",
+    "dataset_dir": "C:\\Users\\A006\\.codex\\worktrees\\95b5\\\u043f\u0440\u043e\u0435\u043a\u0442\\dataset\\yolo26_pose",
+    "visualization_dir": "C:\\Users\\A006\\.codex\\worktrees\\95b5\\\u043f\u0440\u043e\u0435\u043a\u0442\\dataset\\yolo26_pose\\visualizations",
+    "train_images": 332,
+    "train_images_with_pose": 279,
+    "train_pose_annotations": 666,
+    "train_label_files": 332,
+    "val_images": 18,
+    "val_images_with_pose": 15,
+    "val_pose_annotations": 24,
+    "val_label_files": 18
   }
 }

@@ -6,7 +6,7 @@ import shutil
 import warnings
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Iterable
+from typing import Any, Iterable
 
 warnings.filterwarnings("ignore", message="A NumPy version")
 
@@ -20,11 +20,6 @@ import numpy as np
 import torch
 from PIL import Image
 from transformers import AutoImageProcessor, AutoModelForObjectDetection
-
-import sys
-
-sys.path.insert(0, str(ROOT / "vendor" / "FastSAM"))
-from fastsam import FastSAM, FastSAMPrompt
 
 
 CONFIG = json.loads((ROOT / "config" / "pool_scene.json").read_text(encoding="utf-8"))
@@ -56,6 +51,11 @@ def ensure_clean_dir(path: Path) -> None:
     if path.exists():
         shutil.rmtree(path)
     path.mkdir(parents=True, exist_ok=True)
+
+
+def resolve_path(path_like: str | Path) -> Path:
+    path = Path(path_like)
+    return path if path.is_absolute() else ROOT / path
 
 
 def polygon_mask(shape: tuple[int, int], polygon: list[list[int]]) -> np.ndarray:
@@ -184,12 +184,51 @@ def build_water_mask(image_rgb: np.ndarray, pool_mask: np.ndarray) -> np.ndarray
     return (water_mask > 0).astype(np.uint8)
 
 
-def load_models() -> tuple[AutoImageProcessor, AutoModelForObjectDetection, FastSAM]:
+def load_segmenter() -> tuple[Any, str]:
+    backend = str(CONFIG.get("segmentation_backend", "fastsam")).lower()
+
+    if backend == "fastsam":
+        import sys
+
+        sys.path.insert(0, str(ROOT / "vendor" / "FastSAM"))
+        from fastsam import FastSAM
+
+        return FastSAM(str(resolve_path(CONFIG.get("fastsam_weights", FASTSAM_WEIGHTS)))), "FastSAM"
+
+    if backend == "sam3":
+        try:
+            from ultralytics import SAM
+        except ImportError as exc:
+            if not CONFIG.get("allow_fastsam_fallback", True):
+                raise RuntimeError(
+                    "SAM3 backend requires 'ultralytics' and 'timm'. Install requirements.txt first."
+                ) from exc
+            print("[segmenter] SAM3 dependencies are unavailable, falling back to FastSAM.")
+            CONFIG["segmentation_backend"] = "fastsam"
+            return load_segmenter()
+
+        checkpoint = resolve_path(CONFIG.get("sam3_checkpoint", "models/sam3_b.pt"))
+        if not checkpoint.exists():
+            if not CONFIG.get("allow_fastsam_fallback", True):
+                raise FileNotFoundError(
+                    f"SAM3 checkpoint not found: {checkpoint}. "
+                    "Official facebookresearch/sam3 weights require Hugging Face access and authentication."
+                )
+            print(f"[segmenter] SAM3 checkpoint not found at {checkpoint}, falling back to FastSAM.")
+            CONFIG["segmentation_backend"] = "fastsam"
+            return load_segmenter()
+
+        return SAM(str(checkpoint)), "SAM3"
+
+    raise ValueError(f"Unsupported segmentation backend: {backend}")
+
+
+def load_models() -> tuple[AutoImageProcessor, AutoModelForObjectDetection, Any, str]:
     processor = AutoImageProcessor.from_pretrained(RTDETR_DIR, use_fast=False)
     model = AutoModelForObjectDetection.from_pretrained(RTDETR_DIR)
     model.eval()
-    fastsam_model = FastSAM(str(FASTSAM_WEIGHTS))
-    return processor, model, fastsam_model
+    segmenter, segmenter_name = load_segmenter()
+    return processor, model, segmenter, segmenter_name
 
 
 def detect_people(
@@ -225,10 +264,12 @@ def detect_people(
 def refine_with_fastsam(
     image_rgb: np.ndarray,
     detections: list[Detection],
-    fastsam_model: FastSAM,
+    fastsam_model: Any,
 ) -> list[CandidateAnnotation]:
     if not detections:
         return []
+
+    from fastsam import FastSAMPrompt
 
     everything = fastsam_model(
         image_rgb,
@@ -273,6 +314,74 @@ def refine_with_fastsam(
             )
         )
     return refined
+
+
+def refine_with_sam3(
+    image_rgb: np.ndarray,
+    detections: list[Detection],
+    sam_model: Any,
+) -> list[CandidateAnnotation]:
+    refined: list[CandidateAnnotation] = []
+
+    for detection in detections:
+        box = clip_box(detection.bbox_xyxy, image_rgb.shape[1], image_rgb.shape[0])
+        results = sam_model(
+            image_rgb,
+            bboxes=[box],
+            device="cpu",
+            imgsz=int(CONFIG.get("sam3_imgsz", 1024)),
+            conf=float(CONFIG.get("sam3_conf", 0.25)),
+            verbose=False,
+        )
+
+        mask = None
+        if results and getattr(results[0], "masks", None) is not None:
+            masks = results[0].masks.data.cpu().numpy()
+            if masks.ndim == 2:
+                masks = masks[None, ...]
+            if len(masks) > 0:
+                areas = masks.reshape(len(masks), -1).sum(axis=1)
+                mask = (masks[int(np.argmax(areas))] > 0).astype(np.uint8)
+
+        if mask is not None and mask.sum() >= CONFIG["min_mask_area"]:
+            refined_box = bbox_from_mask(mask)
+            segments = contour_to_coco(mask)
+            if refined_box and segments:
+                refined.append(
+                    CandidateAnnotation(
+                        bbox_xyxy=refined_box,
+                        segments=segments,
+                        area=float(mask.sum()),
+                        score=detection.score,
+                        mask=mask,
+                    )
+                )
+                continue
+
+        fallback_mask = box_mask(box, image_rgb.shape[:2])
+        refined.append(
+            CandidateAnnotation(
+                bbox_xyxy=detection.bbox_xyxy,
+                segments=contour_to_coco(fallback_mask),
+                area=bbox_area_xyxy(detection.bbox_xyxy),
+                score=detection.score,
+                mask=fallback_mask,
+            )
+        )
+    return refined
+
+
+def refine_with_segmenter(
+    image_rgb: np.ndarray,
+    detections: list[Detection],
+    segmenter: Any,
+    segmenter_name: str,
+) -> list[CandidateAnnotation]:
+    if segmenter_name == "FastSAM":
+        return refine_with_fastsam(image_rgb, detections, segmenter)
+    if segmenter_name == "SAM3":
+        return refine_with_sam3(image_rgb, detections, segmenter)
+    raise ValueError(f"Unsupported segmenter name: {segmenter_name}")
 
 
 def filter_candidates(
@@ -366,7 +475,7 @@ def build_dataset() -> None:
     ensure_clean_dir(IMAGES_DIR / "val")
     ANNOTATIONS_DIR.mkdir(parents=True, exist_ok=True)
 
-    processor, detector, fastsam_model = load_models()
+    processor, detector, segmenter, segmenter_name = load_models()
     polygon = np.array(CONFIG["pool_polygon"], dtype=np.int32)
     pool_mask_cache: dict[tuple[int, int], np.ndarray] = {}
     core_pool_mask_cache: dict[tuple[int, int], np.ndarray] = {}
@@ -400,7 +509,7 @@ def build_dataset() -> None:
 
             detections = detect_people(image, processor, detector, polygon)
             refined = filter_candidates(
-                refine_with_fastsam(frame_rgb, detections, fastsam_model),
+                refine_with_segmenter(frame_rgb, detections, segmenter, segmenter_name),
                 frame_rgb.shape,
                 pool_mask,
                 core_pool_mask,
@@ -440,7 +549,10 @@ def build_dataset() -> None:
     for split_name, payload in splits.items():
         coco = {
             "info": {
-                "description": "Auto-labeled swimmer dataset generated from cropped pool videos with RT-DETR + FastSAM",
+                "description": (
+                    "Auto-labeled swimmer dataset generated from cropped pool videos "
+                    f"with RT-DETR + {segmenter_name}"
+                ),
             },
             "licenses": [],
             "images": payload["images"],
@@ -459,8 +571,15 @@ def build_dataset() -> None:
         "val_annotations": len(splits["val"]["annotations"]),
         "sample_fps": CONFIG["sample_fps"],
         "val_videos": CONFIG["val_videos"],
+        "segmentation_backend": segmenter_name,
     }
-    (DATASET_DIR / "metadata.json").write_text(json.dumps(stats, indent=2), encoding="utf-8")
+    metadata_path = DATASET_DIR / "metadata.json"
+    if metadata_path.exists():
+        metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+    else:
+        metadata = {}
+    metadata.update(stats)
+    metadata_path.write_text(json.dumps(metadata, indent=2), encoding="utf-8")
     print(json.dumps(stats, indent=2))
 
 

@@ -5,6 +5,8 @@ data/
 third_party/
 tools/
 __pycache__/
+Ultralytics/
+/sam_b.pt
 
 dataset/videos_cropped/*_pool.mp4
 !dataset/videos_cropped/*_undistorted_pool.mp4

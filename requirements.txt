@@ -13,7 +13,9 @@ scipy==1.13.1
 seaborn
 safetensors
 thop
+timm==1.0.26
 torch==2.5.1
 torchvision==0.20.1
 tqdm
 transformers==4.57.1
+ultralytics==8.4.26

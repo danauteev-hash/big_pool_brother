@@ -26,6 +26,12 @@
     [25, 700],
     [0, 250]
   ],
+  "segmentation_backend": "sam3",
+  "allow_fastsam_fallback": true,
+  "sam3_checkpoint": "models/sam3_b.pt",
+  "sam3_imgsz": 1024,
+  "sam3_conf": 0.25,
+  "fastsam_weights": "models/FastSAM-s.pt",
   "sample_fps": 1.0,
   "val_videos": [
     "video_004"
