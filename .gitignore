@@ -7,11 +7,14 @@ tools/
 __pycache__/
 Ultralytics/
 /sam_b.pt
+/models/sam3.pt
+/models/sam3_b.pt
+auto-dataset/last_run_summary.json
 
 dataset/videos_cropped/*_pool.mp4
 !dataset/videos_cropped/*_undistorted_pool.mp4
 
 models/rtdetr_r18vd_coco_o365/.cache/
 
-vendor/FastSAM/**/__pycache__/
-vendor/FastSAM/**/.pytest_cache/
+vendor/sam3/**/__pycache__/
+vendor/sam3/**/.pytest_cache/

@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import shutil
+import sys
 import warnings
 from dataclasses import dataclass
 from pathlib import Path
@@ -28,7 +29,6 @@ DATASET_DIR = ROOT / "dataset"
 IMAGES_DIR = DATASET_DIR / "images"
 ANNOTATIONS_DIR = DATASET_DIR / "annotations"
 RTDETR_DIR = ROOT / "models" / "rtdetr_r18vd_coco_o365"
-FASTSAM_WEIGHTS = ROOT / "models" / "FastSAM-s.pt"
 CATEGORY = {"id": 1, "name": "swimmer", "supercategory": "person"}
 
 
@@ -47,6 +47,13 @@ class CandidateAnnotation:
     mask: np.ndarray
 
 
+@dataclass
+class Sam3Segmenter:
+    model: Any
+    processor: Any
+    device: str
+
+
 def ensure_clean_dir(path: Path) -> None:
     if path.exists():
         shutil.rmtree(path)
@@ -56,6 +63,13 @@ def ensure_clean_dir(path: Path) -> None:
 def resolve_path(path_like: str | Path) -> Path:
     path = Path(path_like)
     return path if path.is_absolute() else ROOT / path
+
+
+def repo_relative_str(path: Path) -> str:
+    try:
+        return path.resolve().relative_to(ROOT).as_posix()
+    except ValueError:
+        return str(path)
 
 
 def polygon_mask(shape: tuple[int, int], polygon: list[list[int]]) -> np.ndarray:
@@ -185,49 +199,48 @@ def build_water_mask(image_rgb: np.ndarray, pool_mask: np.ndarray) -> np.ndarray
 
 
 def load_segmenter() -> tuple[Any, str]:
-    backend = str(CONFIG.get("segmentation_backend", "fastsam")).lower()
-
-    if backend == "fastsam":
-        import sys
-
-        for module_name in list(sys.modules):
-            if module_name == "ultralytics" or module_name.startswith("ultralytics."):
-                sys.modules.pop(module_name, None)
-        sys.path.insert(0, str(ROOT / "vendor" / "FastSAM"))
-        from fastsam import FastSAM
-
-        return FastSAM(str(resolve_path(CONFIG.get("fastsam_weights", FASTSAM_WEIGHTS)))), "FastSAM"
+    backend = str(CONFIG.get("segmentation_backend", "sam3")).lower()
 
     if backend == "sam3":
+        sam3_root = ROOT / "vendor" / "sam3"
+        if sam3_root.exists():
+            sys.path.insert(0, str(sam3_root))
         try:
-            from ultralytics import SAM
+            from sam3.model.sam3_image_processor import Sam3Processor
+            from sam3.model_builder import build_sam3_image_model
         except ImportError as exc:
             if CONFIG.get("allow_box_fallback", True):
                 print("[segmenter] SAM3 dependencies are unavailable, falling back to box-based refinement.")
                 return None, "BoxRefine"
-            if not CONFIG.get("allow_fastsam_fallback", False):
-                raise RuntimeError(
-                    "SAM3 backend requires 'ultralytics' and 'timm'. Install requirements.txt first."
-                ) from exc
-            print("[segmenter] SAM3 dependencies are unavailable, falling back to FastSAM.")
-            CONFIG["segmentation_backend"] = "fastsam"
-            return load_segmenter()
+            raise RuntimeError(
+                "SAM3 backend requires the vendored official repo plus dependencies from requirements.txt."
+            ) from exc
 
-        checkpoint = resolve_path(CONFIG.get("sam3_checkpoint", "models/sam3_b.pt"))
-        if not checkpoint.exists():
+        checkpoint = resolve_path(CONFIG.get("sam3_checkpoint", "models/sam3.pt"))
+        checkpoint_path = str(checkpoint) if checkpoint.exists() else None
+        load_from_hf = bool(CONFIG.get("sam3_load_from_hf", not checkpoint.exists()))
+        device = str(CONFIG.get("sam3_device", "cuda" if torch.cuda.is_available() else "cpu"))
+        bpe_path = sam3_root / "sam3" / "assets" / "bpe_simple_vocab_16e6.txt.gz"
+
+        try:
+            model = build_sam3_image_model(
+                checkpoint_path=checkpoint_path,
+                load_from_HF=load_from_hf,
+                bpe_path=str(bpe_path) if bpe_path.exists() else None,
+                device=device,
+                compile=bool(CONFIG.get("sam3_compile", False)),
+            )
+            processor = Sam3Processor(
+                model,
+                device=device,
+                confidence_threshold=float(CONFIG.get("sam3_conf", 0.25)),
+            )
+            return Sam3Segmenter(model=model, processor=processor, device=device), "SAM3"
+        except Exception as exc:
             if CONFIG.get("allow_box_fallback", True):
-                print(f"[segmenter] SAM3 checkpoint not found at {checkpoint}, falling back to box-based refinement.")
+                print(f"[segmenter] SAM3 could not be initialized ({exc}), falling back to box-based refinement.")
                 return None, "BoxRefine"
-            if not CONFIG.get("allow_fastsam_fallback", False):
-                raise FileNotFoundError(
-                    f"SAM3 checkpoint not found: {checkpoint}. "
-                    "Official facebookresearch/sam3 weights require Hugging Face access and authentication."
-                )
-            print(f"[segmenter] SAM3 checkpoint not found at {checkpoint}, falling back to FastSAM.")
-            CONFIG["segmentation_backend"] = "fastsam"
-            return load_segmenter()
-
-        return SAM(str(checkpoint)), "SAM3"
+            raise RuntimeError("Failed to initialize official SAM3 backend.") from exc
 
     if backend == "box":
         return None, "BoxRefine"
@@ -273,90 +286,73 @@ def detect_people(
     return detections
 
 
-def refine_with_fastsam(
-    image_rgb: np.ndarray,
-    detections: list[Detection],
-    fastsam_model: Any,
-) -> list[CandidateAnnotation]:
-    if not detections:
-        return []
+def box_xyxy_to_sam3_prompt(box: list[int], width: int, height: int) -> list[float]:
+    x1, y1, x2, y2 = box
+    return [
+        ((x1 + x2) / 2.0) / width,
+        ((y1 + y2) / 2.0) / height,
+        max(1.0, x2 - x1) / width,
+        max(1.0, y2 - y1) / height,
+    ]
 
-    from fastsam import FastSAMPrompt
 
-    everything = fastsam_model(
-        image_rgb,
-        device="cpu",
-        retina_masks=True,
-        imgsz=1024,
-        conf=CONFIG["fastsam_conf"],
-        iou=CONFIG["fastsam_iou"],
-        verbose=False,
-    )
-    prompt = FastSAMPrompt(image_rgb, everything, device="cpu")
-    refined: list[CandidateAnnotation] = []
+def select_best_sam3_mask(
+    masks: np.ndarray,
+    boxes: np.ndarray,
+    scores: np.ndarray,
+    target_box: list[float],
+) -> tuple[np.ndarray | None, list[float] | None]:
+    best_mask: np.ndarray | None = None
+    best_box: list[float] | None = None
+    best_score = -1.0
 
-    for detection in detections:
-        box = clip_box(detection.bbox_xyxy, image_rgb.shape[1], image_rgb.shape[0])
-        masks = prompt.box_prompt(bboxes=[box])
-        if len(masks) > 0:
-            mask = masks[0].astype(np.uint8)
-            if mask.sum() >= CONFIG["min_mask_area"]:
-                refined_box = bbox_from_mask(mask)
-                segments = contour_to_coco(mask)
-                if refined_box and segments:
-                    refined.append(
-                        CandidateAnnotation(
-                            bbox_xyxy=refined_box,
-                            segments=segments,
-                            area=float(mask.sum()),
-                            score=detection.score,
-                            mask=mask,
-                        )
-                    )
-                    continue
+    for mask, box, score in zip(masks, boxes, scores):
+        mask_np = np.asarray(mask)
+        if mask_np.ndim == 3:
+            mask_np = mask_np[0]
+        mask_np = (mask_np > 0).astype(np.uint8)
+        if mask_np.sum() < CONFIG["min_mask_area"]:
+            continue
 
-        fallback_mask = box_mask(box, image_rgb.shape[:2])
-        refined.append(
-            CandidateAnnotation(
-                bbox_xyxy=detection.bbox_xyxy,
-                segments=contour_to_coco(fallback_mask),
-                area=bbox_area_xyxy(detection.bbox_xyxy),
-                score=detection.score,
-                mask=fallback_mask,
-            )
-        )
-    return refined
+        pred_box = [float(value) for value in box.tolist()]
+        rank_score = iou_xyxy(pred_box, target_box) + float(score) * 0.25
+        if rank_score > best_score:
+            best_mask = mask_np
+            best_box = pred_box
+            best_score = rank_score
+
+    return best_mask, best_box
 
 
 def refine_with_sam3(
     image_rgb: np.ndarray,
     detections: list[Detection],
-    sam_model: Any,
+    segmenter: Sam3Segmenter,
 ) -> list[CandidateAnnotation]:
+    if not detections:
+        return []
+
+    image_height, image_width = image_rgb.shape[:2]
+    base_state = segmenter.processor.set_image(Image.fromarray(image_rgb))
     refined: list[CandidateAnnotation] = []
 
     for detection in detections:
-        box = clip_box(detection.bbox_xyxy, image_rgb.shape[1], image_rgb.shape[0])
-        results = sam_model(
-            image_rgb,
-            bboxes=[box],
-            device="cpu",
-            imgsz=int(CONFIG.get("sam3_imgsz", 1024)),
-            conf=float(CONFIG.get("sam3_conf", 0.25)),
-            verbose=False,
-        )
+        box = clip_box(detection.bbox_xyxy, image_width, image_height)
+        prompt_box = box_xyxy_to_sam3_prompt(box, image_width, image_height)
+        state = {
+            "original_height": base_state["original_height"],
+            "original_width": base_state["original_width"],
+            "backbone_out": dict(base_state["backbone_out"]),
+        }
 
-        mask = None
-        if results and getattr(results[0], "masks", None) is not None:
-            masks = results[0].masks.data.cpu().numpy()
-            if masks.ndim == 2:
-                masks = masks[None, ...]
-            if len(masks) > 0:
-                areas = masks.reshape(len(masks), -1).sum(axis=1)
-                mask = (masks[int(np.argmax(areas))] > 0).astype(np.uint8)
+        output = segmenter.processor.add_geometric_prompt(prompt_box, True, state)
+        masks = output["masks"].detach().cpu().numpy()
+        boxes = output["boxes"].detach().cpu().numpy()
+        scores = output["scores"].detach().cpu().numpy()
+        mask, refined_box = select_best_sam3_mask(masks, boxes, scores, detection.bbox_xyxy)
 
         if mask is not None and mask.sum() >= CONFIG["min_mask_area"]:
-            refined_box = bbox_from_mask(mask)
+            refined_box = bbox_from_mask(mask) or refined_box
             segments = contour_to_coco(mask)
             if refined_box and segments:
                 refined.append(
@@ -409,8 +405,6 @@ def refine_with_segmenter(
     segmenter: Any,
     segmenter_name: str,
 ) -> list[CandidateAnnotation]:
-    if segmenter_name == "FastSAM":
-        return refine_with_fastsam(image_rgb, detections, segmenter)
     if segmenter_name == "SAM3":
         return refine_with_sam3(image_rgb, detections, segmenter)
     if segmenter_name == "BoxRefine":

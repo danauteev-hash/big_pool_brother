@@ -16,6 +16,13 @@ SRC_LABELS = DATASET_DIR / "yolov8" / "labels"
 OUT_DIR = DATASET_DIR / "yolov8_augmented"
 
 
+def repo_relative_str(path: Path) -> str:
+    try:
+        return path.resolve().relative_to(ROOT).as_posix()
+    except ValueError:
+        return str(path)
+
+
 def ensure_clean_dir(path: Path) -> None:
     if path.exists():
         shutil.rmtree(path)
@@ -169,7 +176,7 @@ def main() -> None:
         "synthetic_train_images": generated,
         "total_train_images": original_train + generated,
         "val_images": val_count,
-        "dataset_dir": str(OUT_DIR),
+        "dataset_dir": repo_relative_str(OUT_DIR),
     }
     metadata_path.write_text(json.dumps(metadata, indent=2), encoding="utf-8")
 
@@ -179,7 +186,7 @@ def main() -> None:
                 "generated_augmented_train_images": generated,
                 "total_train_images": original_train + generated,
                 "val_images": val_count,
-                "output_dir": str(OUT_DIR),
+                "output_dir": repo_relative_str(OUT_DIR),
             },
             indent=2,
         )

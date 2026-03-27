@@ -1,6 +1,0 @@
-{
-  "source_video": "C:\\Users\\A006\\Downloads\\Статика (высота- 5 метров), панорама горизонтального бассейна (180°). 4K 60fps, 1_37. VID_20260304_115044_00_020.mp4",
-  "sample_fps": 4.0,
-  "pose_dataset_dir": "C:\\Users\\A006\\.codex\\worktrees\\95b5\\проект\\dataset\\yolov26_pose",
-  "config_path": "C:\\Users\\A006\\.codex\\worktrees\\95b5\\проект\\auto-dataset\\config.json"
-}

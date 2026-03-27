@@ -65,6 +65,13 @@ COCO17_SKELETON = [
 ]
 
 
+def repo_relative_str(path: Path) -> str:
+    try:
+        return path.resolve().relative_to(ROOT).as_posix()
+    except ValueError:
+        return str(path)
+
+
 @dataclass
 class CropInfo:
     target_box: list[float]
@@ -647,10 +654,10 @@ def main() -> None:
     write_data_yaml()
 
     summary = {
-        "model_checkpoint": str(model_path),
-        "dataset_dir": str(POSE_DIR),
-        "visualization_dir": str(POSE_VIZ_DIR),
-        "label_studio_dir": str(LABEL_STUDIO_DIR),
+        "model_checkpoint": repo_relative_str(model_path),
+        "dataset_dir": repo_relative_str(POSE_DIR),
+        "visualization_dir": repo_relative_str(POSE_VIZ_DIR),
+        "label_studio_dir": repo_relative_str(LABEL_STUDIO_DIR),
         "original_train_images": train_summary["images"],
         "augmented_train_images": generated_augmented,
         "total_train_images": train_summary["images"] + generated_augmented,

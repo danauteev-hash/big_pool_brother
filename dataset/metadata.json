@@ -24,13 +24,13 @@
     "synthetic_train_images": 319,
     "total_train_images": 651,
     "val_images": 18,
-    "dataset_dir": "C:\\Users\\A006\\Desktop\\\u043f\u0440\u043e\u0435\u043a\u0442\\dataset\\yolov8_augmented"
+    "dataset_dir": "dataset/yolov8_augmented"
   },
   "yolov26_pose": {
-    "model_checkpoint": "C:\\Users\\A006\\.codex\\worktrees\\95b5\\\u043f\u0440\u043e\u0435\u043a\u0442\\models\\yolo26n-pose.pt",
-    "dataset_dir": "C:\\Users\\A006\\.codex\\worktrees\\95b5\\\u043f\u0440\u043e\u0435\u043a\u0442\\dataset\\yolov26_pose",
-    "visualization_dir": "C:\\Users\\A006\\.codex\\worktrees\\95b5\\\u043f\u0440\u043e\u0435\u043a\u0442\\dataset\\yolov26_pose\\visualizations",
-    "label_studio_dir": "C:\\Users\\A006\\.codex\\worktrees\\95b5\\\u043f\u0440\u043e\u0435\u043a\u0442\\dataset\\yolov26_pose\\label_studio",
+    "model_checkpoint": "models/yolo26n-pose.pt",
+    "dataset_dir": "dataset/yolov26_pose",
+    "visualization_dir": "dataset/yolov26_pose/visualizations",
+    "label_studio_dir": "dataset/yolov26_pose/label_studio",
     "original_train_images": 465,
     "augmented_train_images": 419,
     "total_train_images": 884,
