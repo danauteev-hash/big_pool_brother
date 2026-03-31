@@ -10,6 +10,8 @@ import cv2
 import numpy as np
 from PIL import Image
 
+from pool_geometry import apply_pool_crop, build_undistort_maps, detect_pool_geometry, load_scene_config, target_crop_size
+
 
 ROOT = Path(__file__).resolve().parents[1]
 DATASET_DIR = ROOT / "dataset"
@@ -17,7 +19,7 @@ IMAGES_DIR = DATASET_DIR / "images"
 ANNOTATIONS_DIR = DATASET_DIR / "annotations"
 TRAIN_JSON = ANNOTATIONS_DIR / "instances_train.json"
 VAL_JSON = ANNOTATIONS_DIR / "instances_val.json"
-CONFIG = json.loads((ROOT / "config" / "pool_scene.json").read_text(encoding="utf-8"))
+CONFIG = load_scene_config()
 
 
 def load_module(module_name: str, path: Path):
@@ -29,7 +31,6 @@ def load_module(module_name: str, path: Path):
 
 
 BUILDER = load_module("pool_builder", ROOT / "scripts" / "build_autolabeled_dataset.py")
-UNDISTORT = load_module("pool_undistort", ROOT / "scripts" / "undistort_fisheye_videos.py")
 
 
 def parse_args() -> argparse.Namespace:
@@ -49,19 +50,13 @@ def save_coco(path: Path, payload: dict) -> None:
     path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
 
 
-def scaled_crop(frame_shape: tuple[int, int, int]) -> tuple[int, int, int, int]:
-    ref_w, ref_h = CONFIG["fisheye"]["reference_dim"]
-    crop = CONFIG["crop"]
-    scale_x = frame_shape[1] / ref_w
-    scale_y = frame_shape[0] / ref_h
-    x = int(round(crop["x"] * scale_x))
-    y = int(round(crop["y"] * scale_y))
-    width = int(round(crop["width"] * scale_x))
-    height = int(round(crop["height"] * scale_y))
-    return x, y, width, height
-
-
-def preprocess_frame(frame_bgr: np.ndarray, map1: np.ndarray, map2: np.ndarray) -> np.ndarray:
+def preprocess_frame(
+    frame_bgr: np.ndarray,
+    map1: np.ndarray,
+    map2: np.ndarray,
+    geometry,
+    output_size: tuple[int, int],
+) -> np.ndarray:
     corrected = cv2.remap(
         frame_bgr,
         map1,
@@ -69,11 +64,8 @@ def preprocess_frame(frame_bgr: np.ndarray, map1: np.ndarray, map2: np.ndarray) 
         interpolation=cv2.INTER_LINEAR,
         borderMode=cv2.BORDER_CONSTANT,
     )
-    x, y, width, height = scaled_crop(frame_bgr.shape)
-    cropped = corrected[y : y + height, x : x + width]
-    target_size = (CONFIG["crop"]["width"], CONFIG["crop"]["height"])
-    resized = cv2.resize(cropped, target_size, interpolation=cv2.INTER_AREA)
-    return cv2.cvtColor(resized, cv2.COLOR_BGR2RGB)
+    cropped = apply_pool_crop(corrected, geometry, output_size=output_size, mask_outside_pool=True)
+    return cv2.cvtColor(cropped, cv2.COLOR_BGR2RGB)
 
 
 def sampled_frame_indices(total_frames: int, video_fps: float, sample_fps: float) -> set[int]:
@@ -128,12 +120,25 @@ def main() -> None:
 
     fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
     total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT)) or int(round(fps * 1))
-    map1, map2 = UNDISTORT.build_maps(
+    map1, map2 = build_undistort_maps(
         (
             int(cap.get(cv2.CAP_PROP_FRAME_WIDTH)),
             int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT)),
-        )
+        ),
+        CONFIG,
     )
+    geometry = detect_pool_geometry(
+        video_path,
+        CONFIG,
+        preprocess=lambda frame: cv2.remap(
+            frame,
+            map1,
+            map2,
+            interpolation=cv2.INTER_LINEAR,
+            borderMode=cv2.BORDER_CONSTANT,
+        ),
+    )
+    output_size = target_crop_size(CONFIG)
     target_indices = sampled_frame_indices(total_frames, fps, args.sample_fps)
 
     frame_index = 0
@@ -148,7 +153,7 @@ def main() -> None:
                 frame_index += 1
                 continue
 
-            frame_rgb = preprocess_frame(frame_bgr, map1, map2)
+            frame_rgb = preprocess_frame(frame_bgr, map1, map2, geometry, output_size)
             image = Image.fromarray(frame_rgb)
             detections = BUILDER.detect_people(image, processor, detector, polygon)
             refined = BUILDER.filter_candidates(

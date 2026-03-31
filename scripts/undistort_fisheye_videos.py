@@ -1,49 +1,57 @@
 from __future__ import annotations
 
-import json
+import argparse
 from pathlib import Path
 
 import cv2
-import numpy as np
+
+from pool_geometry import build_undistort_maps, load_scene_config
 
 
 ROOT = Path(__file__).resolve().parents[1]
-CONFIG = json.loads((ROOT / "config" / "pool_scene.json").read_text(encoding="utf-8"))
 RAW_DIR = ROOT / "data" / "raw_videos" / "swim_vids"
 OUT_DIR = ROOT / "dataset" / "videos_undistorted"
 
 
-def build_maps(dim: tuple[int, int]) -> tuple[np.ndarray, np.ndarray]:
-    reference_w, reference_h = CONFIG["fisheye"]["reference_dim"]
-    K = np.array(CONFIG["fisheye"]["K"], dtype=np.float64)
-    D = np.array(CONFIG["fisheye"]["D"], dtype=np.float64).reshape(4, 1)
-    balance = float(CONFIG["fisheye"]["balance"])
-
-    scaled_K = K.copy()
-    scaled_K[0, :] *= dim[0] / reference_w
-    scaled_K[1, :] *= dim[1] / reference_h
-    scaled_K[2, 2] = 1.0
-
-    new_K = cv2.fisheye.estimateNewCameraMatrixForUndistortRectify(
-        scaled_K,
-        D,
-        dim,
-        np.eye(3),
-        balance=balance,
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="Undistort swimming pool videos with OpenCV fisheye remapping.")
+    parser.add_argument(
+        "--input",
+        dest="inputs",
+        type=Path,
+        action="append",
+        help="Specific input video path. Repeat the flag to process multiple videos.",
     )
-    return cv2.fisheye.initUndistortRectifyMap(
-        scaled_K,
-        D,
-        np.eye(3),
-        new_K,
-        dim,
-        cv2.CV_16SC2,
+    parser.add_argument(
+        "--input-dir",
+        type=Path,
+        default=RAW_DIR,
+        help="Directory with source videos when --input is not provided.",
     )
+    parser.add_argument(
+        "--output-dir",
+        type=Path,
+        default=OUT_DIR,
+        help="Directory where undistorted videos will be written.",
+    )
+    return parser.parse_args()
+
+
+def iter_video_paths(args: argparse.Namespace) -> list[Path]:
+    if args.inputs:
+        return [path.resolve() for path in args.inputs]
+    return sorted(args.input_dir.glob("*.mp4"))
 
 
 def main() -> None:
-    OUT_DIR.mkdir(parents=True, exist_ok=True)
-    for video_path in sorted(RAW_DIR.glob("*.mp4")):
+    args = parse_args()
+    config = load_scene_config()
+    video_paths = iter_video_paths(args)
+    if not video_paths:
+        raise FileNotFoundError("No input videos found for fisheye correction.")
+
+    args.output_dir.mkdir(parents=True, exist_ok=True)
+    for video_path in video_paths:
         cap = cv2.VideoCapture(str(video_path))
         if not cap.isOpened():
             raise RuntimeError(f"Cannot open video: {video_path}")
@@ -51,9 +59,9 @@ def main() -> None:
         width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
         height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
         fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
-        map1, map2 = build_maps((width, height))
+        map1, map2 = build_undistort_maps((width, height), config)
 
-        output_path = OUT_DIR / f"{video_path.stem}_undistorted.mp4"
+        output_path = args.output_dir / f"{video_path.stem}_undistorted.mp4"
         writer = cv2.VideoWriter(
             str(output_path),
             cv2.VideoWriter_fourcc(*"mp4v"),

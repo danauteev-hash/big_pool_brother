@@ -1,31 +1,39 @@
 {
   "fisheye": {
-    "reference_dim": [
-      1920,
-      1080
-    ],
-    "K": [
-      [1400.0, 0.0, 960.0],
-      [0.0, 1400.0, 540.0],
-      [0.0, 0.0, 1.0]
-    ],
-    "D": [-0.05, 0.0, 0.0, 0.0],
-    "balance": 0.0
+    "width": 3840,
+    "height": 2160,
+    "fx": 1628.1599999999999,
+    "fy": 1643.52,
+    "cx": 1920.0,
+    "cy": 1080.0,
+    "k1": 0.0,
+    "k2": 0.0,
+    "k3": 0.0,
+    "k4": 0.0,
+    "scale": 0.51
   },
   "crop": {
-    "x": 82,
-    "y": 22,
-    "width": 1754,
-    "height": 778
+    "x": 0,
+    "y": 0,
+    "width": 1920,
+    "height": 752
   },
   "pool_polygon": [
-    [70, 45],
-    [1560, 0],
-    [1665, 170],
-    [1685, 700],
-    [25, 700],
-    [0, 250]
+    [0, 160],
+    [3, 707],
+    [1919, 663],
+    [1812, 4],
+    [171, 0]
   ],
+  "crop_detection": {
+    "sample_frames": 7,
+    "vote_threshold": 0.6,
+    "open_kernel": 9,
+    "close_kernel": 31,
+    "padding_px": 0,
+    "min_component_area_ratio": 0.1,
+    "polygon_epsilon_ratio": 0.015
+  },
   "segmentation_backend": "sam3",
   "allow_box_fallback": true,
   "sam3_checkpoint": "models/sam3.pt",
