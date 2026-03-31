@@ -64,7 +64,7 @@ def preprocess_frame(
         interpolation=cv2.INTER_LINEAR,
         borderMode=cv2.BORDER_CONSTANT,
     )
-    cropped = apply_pool_crop(corrected, geometry, output_size=output_size, mask_outside_pool=True)
+    cropped = apply_pool_crop(corrected, geometry, output_size=output_size, mask_outside_pool=False)
     return cv2.cvtColor(cropped, cv2.COLOR_BGR2RGB)
 
 

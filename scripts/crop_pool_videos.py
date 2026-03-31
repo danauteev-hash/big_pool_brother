@@ -105,7 +105,7 @@ def main() -> None:
                 ok, frame = cap.read()
                 if not ok:
                     break
-                cropped = apply_pool_crop(frame, geometry, output_size=output_size, mask_outside_pool=True)
+                cropped = apply_pool_crop(frame, geometry, output_size=output_size, mask_outside_pool=False)
                 writer.write(cropped)
         finally:
             cap.release()

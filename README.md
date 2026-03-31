@@ -3,7 +3,7 @@
 This repository contains a local pipeline for:
 
 1. Correcting fish-eye distortion with OpenCV fisheye remapping using scene calibration values.
-2. Cropping the corrected swimming videos to the blue pool water area and masking everything outside the pool.
+2. Cropping the corrected swimming videos to the mask-derived pool bounding box.
 3. Building a COCO-style swimmer dataset using `PekingU/rtdetr_r18vd_coco_o365` detections refined with a configurable segmentation backend.
 4. Replacing dense refinement with the official vendored `SAM3` backend and a lightweight fallback when the machine cannot run SAM3.
 5. Exporting an augmented `YOLOv26 pose` dataset with per-image visualization overlays and a Label Studio review bundle.
@@ -50,7 +50,7 @@ python .\auto-dataset\run_auto_dataset.py
 - The expected checkpoint path is `models/sam3.pt`. The checkpoint itself is not committed because upstream distributes it through gated Hugging Face access.
 - If SAM3 dependencies or checkpoints are unavailable, the active fallback is `BoxRefine`, so the repo still runs end-to-end after a clean clone.
 - Fish-eye correction uses the same `cv2.fisheye` flow as the referenced gist and now accepts direct `fx/fy/cx/cy/k1..k4/scale/width/height` calibration values in `config/pool_scene.json`.
-- `crop_pool_videos.py` no longer relies on a hard-coded rectangle: it estimates the pool contour from blue water, writes a per-video `*_pool_geometry.json` debug file, masks the deck/background, and outputs only the pool crop.
+- `crop_pool_videos.py` no longer relies on a hard-coded rectangle: it estimates the pool contour from blue water, extracts the crop coordinates from the binary mask in OpenCV, writes a per-video `*_pool_geometry.json` debug file, and outputs the rectangular pool crop from that bbox.
 - Validation split is video-based: `video_004` is reserved for validation.
 - The dataset class is `swimmer`, derived from RT-DETR `person` detections limited to the pool polygon and refined by the active segmentation backend.
 - The auto-label pass includes additional edge-case filtering based on a core pool mask, water-color overlap, and stricter handling of right-border detections.
