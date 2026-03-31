@@ -11,7 +11,6 @@ from pool_geometry import (
     detect_pool_geometry,
     load_scene_config,
     relative_polygon,
-    target_crop_size,
 )
 
 
@@ -66,7 +65,6 @@ def save_geometry_debug(path: Path, payload: dict) -> None:
 def main() -> None:
     args = parse_args()
     config = load_scene_config()
-    output_size = target_crop_size(config)
     video_paths = iter_video_paths(args)
     if not video_paths:
         raise FileNotFoundError("No input videos found for pool cropping.")
@@ -74,6 +72,7 @@ def main() -> None:
     args.output_dir.mkdir(parents=True, exist_ok=True)
     for video_path in video_paths:
         geometry = detect_pool_geometry(video_path, config)
+        output_size = (geometry.bbox_xywh[2], geometry.bbox_xywh[3])
         output_path = args.output_dir / f"{video_path.stem}_pool.mp4"
         geometry_path = args.output_dir / f"{video_path.stem}_pool_geometry.json"
 
@@ -91,6 +90,7 @@ def main() -> None:
 
         debug_payload = {
             "input_video": video_path.name,
+            "binary_mask_bbox_xywh": list(geometry.bbox_xywh),
             "detected_bbox_xywh": list(geometry.bbox_xywh),
             "source_size": list(geometry.source_size),
             "source_polygon": geometry.polygon,

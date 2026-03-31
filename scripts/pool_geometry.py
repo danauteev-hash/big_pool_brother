@@ -174,6 +174,20 @@ def sample_video_frames(
     return frames
 
 
+def mask_bounding_box(mask: np.ndarray, padding: int = 0) -> tuple[int, int, int, int]:
+    points = cv2.findNonZero(mask)
+    if points is None:
+        raise ValueError("Binary mask does not contain any foreground pixels.")
+
+    x, y, width, height = cv2.boundingRect(points)
+    height_limit, width_limit = mask.shape
+    x1 = max(0, x - padding)
+    y1 = max(0, y - padding)
+    x2 = min(width_limit, x + width + padding)
+    y2 = min(height_limit, y + height + padding)
+    return int(x1), int(y1), int(x2 - x1), int(y2 - y1)
+
+
 def geometry_from_consensus_masks(masks: list[np.ndarray], config: dict) -> PoolGeometry:
     if not masks:
         raise ValueError("Cannot build pool geometry without masks.")
@@ -193,21 +207,18 @@ def geometry_from_consensus_masks(masks: list[np.ndarray], config: dict) -> Pool
         raise ValueError("No pool contour found in consensus mask.")
     contour = max(contours, key=cv2.contourArea)
 
-    x, y, width, height = cv2.boundingRect(contour)
-    height_limit, width_limit = consensus.shape
-    x1 = max(0, x - padding)
-    y1 = max(0, y - padding)
-    x2 = min(width_limit, x + width + padding)
-    y2 = min(height_limit, y + height + padding)
+    filled_mask = np.zeros_like(consensus)
+    cv2.drawContours(filled_mask, [contour], -1, 255, thickness=cv2.FILLED)
+    x1, y1, width, height = mask_bounding_box(filled_mask, padding=padding)
 
     epsilon = max(1.0, epsilon_ratio * cv2.arcLength(contour, True))
     approx = cv2.approxPolyDP(contour, epsilon, True).reshape(-1, 2)
     polygon = [[int(point[0]), int(point[1])] for point in approx.tolist()]
 
     return PoolGeometry(
-        bbox_xywh=(int(x1), int(y1), int(x2 - x1), int(y2 - y1)),
+        bbox_xywh=(int(x1), int(y1), int(width), int(height)),
         polygon=polygon,
-        source_size=(int(width_limit), int(height_limit)),
+        source_size=(int(consensus.shape[1]), int(consensus.shape[0])),
     )
 
 

@@ -1,5 +1,11 @@
 {
   "input_video": "video_002_undistorted.mp4",
+  "binary_mask_bbox_xywh": [
+    0,
+    0,
+    1920,
+    752
+  ],
   "detected_bbox_xywh": [
     0,
     0,
