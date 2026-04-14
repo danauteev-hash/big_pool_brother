@@ -20,6 +20,20 @@ class PoolGeometry:
     source_size: tuple[int, int]
 
 
+@dataclass
+class UndistortPlan:
+    input_size: tuple[int, int]
+    crop_xywh: tuple[int, int, int, int]
+    map1: np.ndarray
+    map2: np.ndarray
+    camera_matrix: np.ndarray
+    new_camera_matrix: np.ndarray
+
+    @property
+    def output_size(self) -> tuple[int, int]:
+        return int(self.crop_xywh[2]), int(self.crop_xywh[3])
+
+
 def load_scene_config() -> dict:
     return json.loads(CONFIG_PATH.read_text(encoding="utf-8"))
 
@@ -42,6 +56,22 @@ def fisheye_balance(config: dict) -> float:
     if "balance" in fisheye:
         return float(fisheye["balance"])
     return float(fisheye.get("scale", 0.0))
+
+
+def fisheye_fov_scale(config: dict) -> float:
+    return float(config["fisheye"].get("fov_scale", 1.0))
+
+
+def fisheye_scale(config: dict) -> float:
+    return float(config["fisheye"].get("scale", 1.0))
+
+
+def fisheye_auto_crop(config: dict) -> bool:
+    return bool(config["fisheye"].get("auto_crop", False))
+
+
+def fisheye_crop_margin_px(config: dict) -> int:
+    return max(0, int(config["fisheye"].get("crop_margin_px", 0)))
 
 
 def fisheye_camera_matrix(config: dict) -> np.ndarray:
@@ -73,26 +103,100 @@ def fisheye_distortion(config: dict) -> np.ndarray:
     ).reshape(4, 1)
 
 
-def build_undistort_maps(dim: tuple[int, int], config: dict | None = None) -> tuple[np.ndarray, np.ndarray]:
+def largest_valid_rect(binary_mask: np.ndarray) -> tuple[int, int, int, int]:
+    height, width = binary_mask.shape
+    heights = np.zeros(width, dtype=np.int32)
+
+    best_x, best_y, best_width, best_height = 0, 0, width, height
+    best_area = 0
+
+    for y_coord in range(height):
+        row = binary_mask[y_coord] > 0
+        heights[row] += 1
+        heights[~row] = 0
+
+        stack: list[int] = []
+        for x_coord in range(width + 1):
+            current_height = heights[x_coord] if x_coord < width else 0
+            while stack and current_height < heights[stack[-1]]:
+                top = stack.pop()
+                rect_height = heights[top]
+                if rect_height == 0:
+                    continue
+                left = stack[-1] + 1 if stack else 0
+                rect_width = x_coord - left
+                area = rect_width * rect_height
+                if area > best_area:
+                    best_area = area
+                    best_x = left
+                    best_y = y_coord - rect_height + 1
+                    best_width = rect_width
+                    best_height = rect_height
+            stack.append(x_coord)
+
+    return best_x, best_y, best_width, best_height
+
+
+def compute_auto_crop_roi(
+    map1: np.ndarray,
+    map2: np.ndarray,
+    dim: tuple[int, int],
+    margin_px: int = 0,
+) -> tuple[int, int, int, int]:
+    width, height = dim
+    white_mask = np.full((height, width), 255, dtype=np.uint8)
+    valid = cv2.remap(
+        white_mask,
+        map1,
+        map2,
+        interpolation=cv2.INTER_NEAREST,
+        borderMode=cv2.BORDER_CONSTANT,
+        borderValue=0,
+    )
+
+    x_coord, y_coord, roi_width, roi_height = largest_valid_rect(valid)
+    margin_px = max(0, int(margin_px))
+    if margin_px > 0:
+        x_coord += margin_px
+        y_coord += margin_px
+        roi_width -= margin_px * 2
+        roi_height -= margin_px * 2
+
+    roi_width = max(2, roi_width - (roi_width % 2))
+    roi_height = max(2, roi_height - (roi_height % 2))
+    x_coord = int(np.clip(x_coord, 0, max(0, width - roi_width)))
+    y_coord = int(np.clip(y_coord, 0, max(0, height - roi_height)))
+    return x_coord, y_coord, roi_width, roi_height
+
+
+def build_undistort_plan(dim: tuple[int, int], config: dict | None = None) -> UndistortPlan:
     config = config or load_scene_config()
     reference_w, reference_h = reference_video_dim(config)
     K = fisheye_camera_matrix(config)
     D = fisheye_distortion(config)
-    balance = fisheye_balance(config)
+    fisheye = config["fisheye"]
 
     scaled_K = K.copy()
     scaled_K[0, :] *= dim[0] / reference_w
     scaled_K[1, :] *= dim[1] / reference_h
     scaled_K[2, 2] = 1.0
 
-    new_K = cv2.fisheye.estimateNewCameraMatrixForUndistortRectify(
-        scaled_K,
-        D,
-        dim,
-        np.eye(3),
-        balance=balance,
-    )
-    return cv2.fisheye.initUndistortRectifyMap(
+    if "balance" in fisheye:
+        new_K = cv2.fisheye.estimateNewCameraMatrixForUndistortRectify(
+            scaled_K,
+            D,
+            dim,
+            np.eye(3),
+            balance=fisheye_balance(config),
+            new_size=dim,
+            fov_scale=fisheye_fov_scale(config),
+        )
+    else:
+        new_K = scaled_K.copy()
+        new_K[0, 0] *= fisheye_scale(config)
+        new_K[1, 1] *= fisheye_scale(config)
+
+    map1, map2 = cv2.fisheye.initUndistortRectifyMap(
         scaled_K,
         D,
         np.eye(3),
@@ -100,6 +204,47 @@ def build_undistort_maps(dim: tuple[int, int], config: dict | None = None) -> tu
         dim,
         cv2.CV_16SC2,
     )
+
+    if fisheye_auto_crop(config):
+        crop_xywh = compute_auto_crop_roi(
+            map1,
+            map2,
+            dim,
+            margin_px=fisheye_crop_margin_px(config),
+        )
+    else:
+        crop_xywh = (0, 0, int(dim[0]), int(dim[1]))
+
+    return UndistortPlan(
+        input_size=(int(dim[0]), int(dim[1])),
+        crop_xywh=crop_xywh,
+        map1=map1,
+        map2=map2,
+        camera_matrix=scaled_K,
+        new_camera_matrix=new_K,
+    )
+
+
+def build_undistort_maps(dim: tuple[int, int], config: dict | None = None) -> tuple[np.ndarray, np.ndarray]:
+    plan = build_undistort_plan(dim, config)
+    return plan.map1, plan.map2
+
+
+def apply_undistort(
+    frame_bgr: np.ndarray,
+    plan: UndistortPlan,
+    interpolation: int = cv2.INTER_LINEAR,
+    border_mode: int = cv2.BORDER_CONSTANT,
+) -> np.ndarray:
+    corrected = cv2.remap(
+        frame_bgr,
+        plan.map1,
+        plan.map2,
+        interpolation=interpolation,
+        borderMode=border_mode,
+    )
+    x_coord, y_coord, width, height = plan.crop_xywh
+    return corrected[y_coord : y_coord + height, x_coord : x_coord + width]
 
 
 def odd_kernel_size(size: int) -> int:
@@ -285,6 +430,27 @@ def relative_polygon(geometry: PoolGeometry, output_size: tuple[int, int] | None
         polygon[:, 1] *= scale_y
 
     return [[int(round(px)), int(round(py))] for px, py in polygon.tolist()]
+
+
+def scale_polygon(
+    polygon: list[list[int]],
+    source_size: tuple[int, int],
+    target_size: tuple[int, int],
+) -> list[list[int]]:
+    source_width, source_height = source_size
+    target_width, target_height = target_size
+    if source_width <= 0 or source_height <= 0:
+        raise ValueError("Polygon source size must be positive.")
+
+    scale_x = target_width / source_width
+    scale_y = target_height / source_height
+    return [
+        [
+            int(round(point_x * scale_x)),
+            int(round(point_y * scale_y)),
+        ]
+        for point_x, point_y in polygon
+    ]
 
 
 def apply_pool_crop(

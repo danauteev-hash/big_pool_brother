@@ -10,6 +10,7 @@ Ultralytics/
 /models/sam3.pt
 /models/sam3_b.pt
 auto-dataset/last_run_summary.json
+auto-dataset/input_videos/*.mp4
 
 dataset/videos_cropped/*_pool.mp4
 !dataset/videos_cropped/*_undistorted_pool.mp4

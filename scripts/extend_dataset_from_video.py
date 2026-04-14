@@ -10,7 +10,14 @@ import cv2
 import numpy as np
 from PIL import Image
 
-from pool_geometry import apply_pool_crop, build_undistort_maps, detect_pool_geometry, load_scene_config, target_crop_size
+from pool_geometry import (
+    apply_pool_crop,
+    apply_undistort,
+    build_undistort_plan,
+    detect_pool_geometry,
+    load_scene_config,
+    relative_polygon,
+)
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -52,18 +59,11 @@ def save_coco(path: Path, payload: dict) -> None:
 
 def preprocess_frame(
     frame_bgr: np.ndarray,
-    map1: np.ndarray,
-    map2: np.ndarray,
+    plan,
     geometry,
     output_size: tuple[int, int],
 ) -> np.ndarray:
-    corrected = cv2.remap(
-        frame_bgr,
-        map1,
-        map2,
-        interpolation=cv2.INTER_LINEAR,
-        borderMode=cv2.BORDER_CONSTANT,
-    )
+    corrected = apply_undistort(frame_bgr, plan)
     cropped = apply_pool_crop(corrected, geometry, output_size=output_size, mask_outside_pool=False)
     return cv2.cvtColor(cropped, cv2.COLOR_BGR2RGB)
 
@@ -120,7 +120,7 @@ def main() -> None:
 
     fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
     total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT)) or int(round(fps * 1))
-    map1, map2 = build_undistort_maps(
+    plan = build_undistort_plan(
         (
             int(cap.get(cv2.CAP_PROP_FRAME_WIDTH)),
             int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT)),
@@ -130,15 +130,13 @@ def main() -> None:
     geometry = detect_pool_geometry(
         video_path,
         CONFIG,
-        preprocess=lambda frame: cv2.remap(
-            frame,
-            map1,
-            map2,
-            interpolation=cv2.INTER_LINEAR,
-            borderMode=cv2.BORDER_CONSTANT,
-        ),
+        preprocess=lambda frame: apply_undistort(frame, plan),
     )
-    output_size = target_crop_size(CONFIG)
+    output_size = (geometry.bbox_xywh[2], geometry.bbox_xywh[3])
+    polygon_points = relative_polygon(geometry, output_size)
+    polygon = np.array(polygon_points, dtype=np.int32)
+    pool_mask = BUILDER.polygon_mask((output_size[1], output_size[0]), polygon_points)
+    core_pool_mask = BUILDER.build_core_pool_mask(pool_mask)
     target_indices = sampled_frame_indices(total_frames, fps, args.sample_fps)
 
     frame_index = 0
@@ -153,7 +151,7 @@ def main() -> None:
                 frame_index += 1
                 continue
 
-            frame_rgb = preprocess_frame(frame_bgr, map1, map2, geometry, output_size)
+            frame_rgb = preprocess_frame(frame_bgr, plan, geometry, output_size)
             image = Image.fromarray(frame_rgb)
             detections = BUILDER.detect_people(image, processor, detector, polygon)
             refined = BUILDER.filter_candidates(
@@ -222,6 +220,8 @@ def main() -> None:
             "fps": round(float(fps), 4),
             "duration_seconds": round(total_frames / fps, 2) if fps else None,
             "segmentation_backend": segmenter_name,
+            "output_size": [int(output_size[0]), int(output_size[1])],
+            "undistort_crop_xywh": [int(value) for value in plan.crop_xywh],
         }
     )
     (DATASET_DIR / "metadata.json").write_text(json.dumps(metadata, indent=2), encoding="utf-8")

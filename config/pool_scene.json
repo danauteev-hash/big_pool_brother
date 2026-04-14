@@ -10,6 +10,10 @@
     "k2": 0.0,
     "k3": 0.0,
     "k4": 0.0,
+    "balance": 0.35,
+    "fov_scale": 1.0,
+    "auto_crop": true,
+    "crop_margin_px": 8,
     "scale": 0.51
   },
   "crop": {

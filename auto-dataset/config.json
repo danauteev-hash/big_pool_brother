@@ -1,11 +1,19 @@
 {
   "source_video": "auto-dataset/input_videos/full_pool_video.mp4",
+  "raw_video_dir": "data/raw_videos/swim_vids",
   "video_id": "full_pool_video_20260304",
   "sample_fps": 4.0,
   "pose_dataset_dir": "dataset/yolov26_pose",
+  "rebuild_base_dataset": true,
+  "rebuild_yolov8_exports": true,
   "segmentation_backend": "sam3",
   "sam3_checkpoint": "models/sam3.pt",
   "sam3_load_from_hf": true,
   "sam3_device": "cpu",
-  "allow_box_fallback": true
+  "allow_box_fallback": true,
+  "balance": 0.35,
+  "fov_scale": 1.0,
+  "auto_crop": true,
+  "crop_margin_px": 8,
+  "scale": 0.51
 }

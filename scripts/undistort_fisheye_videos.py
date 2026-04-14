@@ -1,11 +1,12 @@
 from __future__ import annotations
 
 import argparse
+import json
 from pathlib import Path
 
 import cv2
 
-from pool_geometry import build_undistort_maps, load_scene_config
+from pool_geometry import apply_undistort, build_undistort_plan, load_scene_config
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -59,14 +60,29 @@ def main() -> None:
         width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
         height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
         fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
-        map1, map2 = build_undistort_maps((width, height), config)
+        plan = build_undistort_plan((width, height), config)
 
         output_path = args.output_dir / f"{video_path.stem}_undistorted.mp4"
+        debug_path = args.output_dir / f"{video_path.stem}_undistorted_plan.json"
         writer = cv2.VideoWriter(
             str(output_path),
             cv2.VideoWriter_fourcc(*"mp4v"),
             fps,
-            (width, height),
+            plan.output_size,
+        )
+        debug_path.write_text(
+            json.dumps(
+                {
+                    "input_video": video_path.name,
+                    "input_size": [width, height],
+                    "output_size": list(plan.output_size),
+                    "crop_xywh": [int(value) for value in plan.crop_xywh],
+                    "camera_matrix": [[float(value) for value in row] for row in plan.camera_matrix.tolist()],
+                    "new_camera_matrix": [[float(value) for value in row] for row in plan.new_camera_matrix.tolist()],
+                },
+                indent=2,
+            ),
+            encoding="utf-8",
         )
 
         print(f"[undistort] {video_path.name} -> {output_path.name}")
@@ -75,13 +91,7 @@ def main() -> None:
                 ok, frame = cap.read()
                 if not ok:
                     break
-                corrected = cv2.remap(
-                    frame,
-                    map1,
-                    map2,
-                    interpolation=cv2.INTER_LINEAR,
-                    borderMode=cv2.BORDER_CONSTANT,
-                )
+                corrected = apply_undistort(frame, plan)
                 writer.write(corrected)
         finally:
             cap.release()

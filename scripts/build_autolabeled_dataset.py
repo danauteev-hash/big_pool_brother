@@ -72,6 +72,51 @@ def repo_relative_str(path: Path) -> str:
         return str(path)
 
 
+def scale_polygon_to_size(
+    polygon: list[list[int]],
+    source_size: tuple[int, int],
+    target_size: tuple[int, int],
+) -> list[list[int]]:
+    source_width, source_height = source_size
+    target_width, target_height = target_size
+    if source_width <= 0 or source_height <= 0:
+        raise ValueError("Polygon source size must be positive.")
+
+    scale_x = target_width / source_width
+    scale_y = target_height / source_height
+    return [
+        [
+            int(round(point_x * scale_x)),
+            int(round(point_y * scale_y)),
+        ]
+        for point_x, point_y in polygon
+    ]
+
+
+def fallback_pool_polygon(frame_size: tuple[int, int]) -> list[list[int]]:
+    source_size = (int(CONFIG["crop"]["width"]), int(CONFIG["crop"]["height"]))
+    return scale_polygon_to_size(CONFIG["pool_polygon"], source_size, frame_size)
+
+
+def resolve_video_polygon(video_path: Path, frame_size: tuple[int, int]) -> list[list[int]]:
+    geometry_path = video_path.with_name(f"{video_path.stem}_geometry.json")
+    if not geometry_path.exists():
+        return fallback_pool_polygon(frame_size)
+
+    payload = json.loads(geometry_path.read_text(encoding="utf-8"))
+    polygon = payload.get("output_polygon") or payload.get("source_polygon")
+    source_size_raw = payload.get("output_size") or payload.get("source_size")
+    if not polygon or not source_size_raw:
+        return fallback_pool_polygon(frame_size)
+
+    source_size = (int(source_size_raw[0]), int(source_size_raw[1]))
+    return scale_polygon_to_size(
+        [[int(x_coord), int(y_coord)] for x_coord, y_coord in polygon],
+        source_size,
+        frame_size,
+    )
+
+
 def polygon_mask(shape: tuple[int, int], polygon: list[list[int]]) -> np.ndarray:
     mask = np.zeros(shape, dtype=np.uint8)
     pts = np.array(polygon, dtype=np.int32)
@@ -504,10 +549,6 @@ def build_dataset() -> None:
     ANNOTATIONS_DIR.mkdir(parents=True, exist_ok=True)
 
     processor, detector, segmenter, segmenter_name = load_models()
-    polygon = np.array(CONFIG["pool_polygon"], dtype=np.int32)
-    pool_mask_cache: dict[tuple[int, int], np.ndarray] = {}
-    core_pool_mask_cache: dict[tuple[int, int], np.ndarray] = {}
-
     splits = {
         "train": {"images": [], "annotations": [], "count": 0},
         "val": {"images": [], "annotations": [], "count": 0},
@@ -520,6 +561,10 @@ def build_dataset() -> None:
         stem = video_path.stem.replace("_pool", "").replace("_undistorted", "")
         split = "val" if stem in CONFIG["val_videos"] else "train"
         print(f"[dataset] {video_path.name} -> {split}")
+        polygon_points: list[list[int]] | None = None
+        polygon: np.ndarray | None = None
+        pool_mask: np.ndarray | None = None
+        core_pool_mask: np.ndarray | None = None
 
         for sample_idx, frame_bgr in sampled_frames(video_path, CONFIG["sample_fps"]):
             frame_rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
@@ -527,12 +572,16 @@ def build_dataset() -> None:
             filename = f"{video_path.stem}_{sample_idx:04d}.jpg"
             save_rgb(frame_rgb, IMAGES_DIR / split / filename)
 
-            shape_key = frame_rgb.shape[:2]
-            if shape_key not in pool_mask_cache:
-                pool_mask_cache[shape_key] = polygon_mask(shape_key, CONFIG["pool_polygon"])
-                core_pool_mask_cache[shape_key] = build_core_pool_mask(pool_mask_cache[shape_key])
-            pool_mask = pool_mask_cache[shape_key]
-            core_pool_mask = core_pool_mask_cache[shape_key]
+            frame_size = (int(frame_rgb.shape[1]), int(frame_rgb.shape[0]))
+            if polygon_points is None:
+                polygon_points = resolve_video_polygon(video_path, frame_size)
+                polygon = np.array(polygon_points, dtype=np.int32)
+                pool_mask = polygon_mask((frame_size[1], frame_size[0]), polygon_points)
+                core_pool_mask = build_core_pool_mask(pool_mask)
+
+            assert polygon is not None
+            assert pool_mask is not None
+            assert core_pool_mask is not None
             water_mask = build_water_mask(frame_rgb, pool_mask)
 
             detections = detect_people(image, processor, detector, polygon)

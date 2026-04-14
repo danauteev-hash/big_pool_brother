@@ -52,6 +52,12 @@ def sync_scene_config(config: dict) -> None:
     ):
         if key in config:
             scene_config[key] = config[key]
+    if "sample_fps" in config:
+        scene_config["sample_fps"] = config["sample_fps"]
+    for key in ("balance", "fov_scale", "auto_crop", "crop_margin_px", "scale"):
+        if key in config:
+            scene_config.setdefault("fisheye", {})
+            scene_config["fisheye"][key] = config[key]
     SCENE_CONFIG_PATH.write_text(json.dumps(scene_config, indent=2), encoding="utf-8")
 
 
@@ -72,6 +78,26 @@ def main() -> None:
         )
     sync_scene_config(config)
 
+    if bool(config.get("rebuild_base_dataset", True)):
+        raw_video_dir = resolve_repo_path(config.get("raw_video_dir", "data/raw_videos/swim_vids"))
+        if not raw_video_dir.exists():
+            raise FileNotFoundError(f"Configured raw_video_dir does not exist: {raw_video_dir}")
+
+        run_step(
+            [
+                python_exe,
+                "scripts/undistort_fisheye_videos.py",
+                "--input-dir",
+                str(raw_video_dir),
+            ]
+        )
+        run_step([python_exe, "scripts/crop_pool_videos.py"])
+        run_step([python_exe, "scripts/build_autolabeled_dataset.py"])
+
+        if bool(config.get("rebuild_yolov8_exports", True)):
+            run_step([python_exe, "scripts/export_yolov8_labels.py"])
+            run_step([python_exe, "scripts/build_yolov8_augmented_dataset.py"])
+
     run_step(
         [
             python_exe,
@@ -89,6 +115,8 @@ def main() -> None:
     summary = {
         "source_video": repo_relative_str(video_path),
         "sample_fps": config["sample_fps"],
+        "rebuild_base_dataset": bool(config.get("rebuild_base_dataset", True)),
+        "raw_video_dir": repo_relative_str(resolve_repo_path(config.get("raw_video_dir", "data/raw_videos/swim_vids"))),
         "pose_dataset_dir": repo_relative_str(resolve_repo_path(config["pose_dataset_dir"])),
         "config_path": repo_relative_str(config_path),
     }
